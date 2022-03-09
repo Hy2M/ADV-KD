@@ -1,0 +1,26 @@
+{
+  "lr": 0.1,
+  "lr_decay_rate": 0.1,
+  "lr_decay_schedule": [
+    150,
+    225
+  ],
+  "weight_decay": 0.0005,
+  "start_epoch": 0,
+  "end_epoch": 300,
+  "PSKD": false,
+  "batch_size": 128,
+  "experiments_dir": "./results",
+  "classifier_type": "ResNet18",
+  "data_path": "../data/CIFAR100/",
+  "data_type": "cifar100",
+  "alpha_T": 0.8,
+  "saveckp_freq": 299,
+  "rank": -1,
+  "world_size": 1,
+  "dist_backend": "nccl",
+  "dist_url": "tcp://127.0.0.1:8080",
+  "workers": 40,
+  "multiprocessing_distributed": false,
+  "resume": null
+}
