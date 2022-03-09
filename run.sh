@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=3 python3 main.py --lr 0.1 --lr_decay_schedule 150 225 --experiments_dir './results' --batch_size 128 --classifier_type 'ResNet18' --data_path '../data/CIFAR100/' --data_type 'cifar100' --PSKD
