@@ -93,9 +93,7 @@ def parse_args():
     parser.add_argument('--resume', type=str, default=None, help='load model path')
 
     parser.add_argument('--d_lr', default=0.0001, type=float, help='discriminator learning rate')
-    parser.add_argument('--d_up', default=5, type=float, help='discriminator update')
     parser.add_argument('--omega',default=0.1 ,type=float, help='coefficient for adversarial loss')
-    parser.add_argument('--gp_lam',default=10.0 ,type=float, help='gp lambda')
 
     parser.add_argument('--d_dense',default=10 ,type=int, help='discriminator dense')
     parser.add_argument('--d_domain',default=2 ,type=int, help='discriminator domain')
@@ -249,8 +247,6 @@ def main_worker(gpu, ngpus_per_node, model_dir, log_dir, args):
     ####
     net_pre = get_network(args)
     teacher_checkpoint = './pre/cifar100_ResNet18_Pre/model/checkpoint_best.pth'
-    # teacher_checkpoint = './pre/cifar100_DenseNet121_Pre/model/checkpoint_best.pth'
-    # teacher_checkpoint = './pre/tiny_ResNet18_Pre/model/checkpoint_best.pth'
     load_checkpoint(teacher_checkpoint, net_pre)
 
     discriminator_net = get_discriminator(args)
@@ -298,7 +294,6 @@ def main_worker(gpu, ngpus_per_node, model_dir, log_dir, args):
             
             net = torch.nn.parallel.DistributedDataParallel(net,device_ids=[args.gpu])
             net_pre = torch.nn.parallel.DistributedDataParallel(net_pre,device_ids=[args.gpu])
-            discriminator_net = torch.nn.parallel.DistributedDataParallel(discriminator_net,device_ids=[args.gpu])
 
             print(C.green("[!] [Rank {}] Distributed DataParallel Setting End".format(args.rank)))
             
@@ -346,10 +341,10 @@ def main_worker(gpu, ngpus_per_node, model_dir, log_dir, args):
         # criterion_KD = nn.KLDivLoss(reduction="sum").cuda(args.gpu)
     else:
         criterion_CE_pskd = None
-
     optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
+
+    criterion_domain = nn.CrossEntropyLoss()
     optimizer_Discriminator = torch.optim.Adam(discriminator_net.parameters(), lr = args.d_lr, betas=(0.9, 0.99))
-    # optimizer_Discriminator = torch.optim.SGD(discriminator_net.parameters(), lr=args.d_lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
 
     #----------------------------------------------------
     #  Empty matrix for store predictions
@@ -411,6 +406,7 @@ def main_worker(gpu, ngpus_per_node, model_dir, log_dir, args):
                                 criterion_CE,
                                 criterion_CE_pskd,
                                 criterion_KD,
+                                criterion_domain,
                                 optimizer,
                                 optimizer_Discriminator,
                                 net,
@@ -466,8 +462,7 @@ def main_worker(gpu, ngpus_per_node, model_dir, log_dir, args):
 
 def compute_gradient_penalty(D, real_samples, fake_samples):
     # Random weight term for interpolation between real and fake samples
-    # alpha = torch.FloatTensor(np.random.random((real_samples.size(0), 1, 1, 1))).cuda()
-    alpha = torch.FloatTensor(np.random.random((real_samples.size(0), 1))).cuda()
+    alpha = torch.FloatTensor(np.random.random((real_samples.size(0), 1, 1, 1))).cuda()
     # Get random interpolation between real and fake samples
     interpolates = (alpha * real_samples + (1 - alpha) * fake_samples).requires_grad_(True)
     d_interpolates = D(interpolates)
@@ -493,6 +488,7 @@ def train(all_predictions,
           criterion_CE,
           criterion_CE_pskd,
           criterion_KL,
+          criterion_domain,
           optimizer,
           optimizer_discriminator,
           net,
@@ -512,10 +508,7 @@ def train(all_predictions,
     tf_losses = AverageMeter()
 
     ad_losses= AverageMeter()
-    d_losses= AverageMeter()
-
-    d_std = AverageMeter()
-    d_pre = AverageMeter()
+    d_losses= AverageMeter()    
     
     correct = 0
     total = 0
@@ -545,21 +538,17 @@ def train(all_predictions,
                 all_predictions[input_indices] = targets_one_hot
 
             # Training discriminator
-            if batch_idx % args.d_up != 0:
+            if batch_idx % 5 != 0:
                 # Adversarial loss, assume the output from net as fake samples and the output from pretrained net as real samples
+                lambda_gp = 10.0
                 # Wasserstein GAN with Gradient Penalty
                 outputs = net(inputs)
                 with torch.no_grad():
                     outputs_pre = net_pre(inputs)
                 d_output = discriminator_net(outputs)
                 d_output_pre = discriminator_net(outputs_pre)
-                # d_output_pre = d_output_pre.detach()
-
                 gradient_penalty = compute_gradient_penalty(discriminator_net, outputs_pre, outputs)
-                d_loss = -torch.mean(d_output_pre) + torch.mean(d_output) + args.gp_lam * gradient_penalty
-
-                d_std.update(torch.mean(d_output), inputs.size(0))
-                d_pre.update(torch.mean(d_output_pre), inputs.size(0))
+                d_loss = -torch.mean(d_output_pre) + torch.mean(d_output) + lambda_gp * gradient_penalty
 
                 optimizer_discriminator.zero_grad()
                 d_loss.backward()
@@ -592,7 +581,7 @@ def train(all_predictions,
                 dist.all_gather(gathered_indices, input_indices.cuda())
                 gathered_indices = torch.cat(gathered_indices, dim=0)
             
-            if batch_idx % args.d_up == 0:
+            if batch_idx % 5 == 0:
                 d_output = discriminator_net(outputs)
                 adv_loss = -torch.mean(d_output) * args.omega
                 
@@ -631,14 +620,14 @@ def train(all_predictions,
             else:
                 all_predictions[input_indices] = softmax_output.cpu().detach()
         
-        progress_bar(epoch,batch_idx, len(train_loader), args, 'lr: {:.1e} | alpha: {:.3f} | loss: {:.3f}/{:.3f}/{:.3f}/{:.3f}[{:.3f}/{:.3f}][{:.3f}/{:.3f}] | top1_acc: {:.3f} | top5_acc: {:.3f})'.format(
-            current_LR, alpha, train_losses.avg, ce_losses.avg, ps_losses.avg, tf_losses.avg, ad_losses.avg, d_losses.avg, d_std.avg, d_pre.avg, train_top1.avg, train_top5.avg))
+        progress_bar(epoch,batch_idx, len(train_loader), args, 'lr: {:.1e} | alpha: {:.3f} | loss: {:.3f}/{:.3f}/{:.3f}/{:.3f}[{:.3f}/{:.3f}] | top1_acc: {:.3f} | top5_acc: {:.3f} | correct/total({}/{})'.format(
+            current_LR, alpha, train_losses.avg, ce_losses.avg, ps_losses.avg, tf_losses.avg, ad_losses.avg, d_losses.avg, train_top1.avg, train_top5.avg, correct, total))
 
     if args.distributed:
         dist.barrier()
     
     logger = logging.getLogger('train')
-    logger.info('[Rank {}] [Epoch {}] [PSKD {}] [lr {:.1e}] [alpha {:.3f}] [train_loss {:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}] [train_acc {:.3f}/{:.3f}] [correct/total {}/{}]'.format(
+    logger.info('[Rank {}] [Epoch {}] [PSKD {}] [lr {:.1e}] [alpha {:.3f}] [train_loss {:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}/{:.3f}] [train_acc{:.3f}/{:.3f}] [correct/total {}/{}]'.format(
         args.rank,
         epoch,
         args.PSKD,
@@ -650,8 +639,6 @@ def train(all_predictions,
         tf_losses.avg,
         ad_losses.avg,
         d_losses.avg,
-        d_std.avg,
-        d_pre.avg,
         train_top1.avg,
         train_top5.avg,
         correct,

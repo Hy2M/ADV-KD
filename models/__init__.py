@@ -11,3 +11,6 @@ from models.resnext import *
 
 #for imagenet
 from models.resnet_imagenet import *
+
+##
+from models.discriminator import *

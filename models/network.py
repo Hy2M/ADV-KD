@@ -2,6 +2,7 @@
 #CNN-architecture
 #--------------
 from models import *
+from models.discriminator import Discriminator
 
 #--------------
 #util
@@ -36,5 +37,14 @@ def get_network(args):
  
     print(C.underline(C.yellow("[Info] Building model: {}".format(args.classifier_type))))
 
+
+    return net
+
+def get_discriminator(args):
+    if args.data_type == 'cifar100':
+        # net = Discriminator(n_class=100, n_dense=32, n_domain=2)
+        net = Discriminator(n_class=100, n_dense=args.d_dense, n_domain=args.d_domain)
+    elif args.data_type == 'imagenet':
+        net = Discriminator(n_class=1000, n_dense=256, n_domain=2)
 
     return net
